@@ -1,0 +1,11 @@
+*.pyc
+*.swp
+.project
+.pydevproject
+build
+dist
+MANIFEST
+.idea
+*.egg-info/
+.tox
+.DS_Store
