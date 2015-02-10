@@ -31,8 +31,8 @@ and submit an issue if you have any problems or questions.
 License
 -------
 
-Copyright (C) 2013 Rackspace
-Copyright (C) 2015 Gregory Taylor
+* Copyright (C) 2013 Rackspace
+* Copyright (C) 2015 Gregory Taylor
 
 This software is licensed under the Apache 2.0 License. See the included
 ``LICENSE`` file for a copy.
