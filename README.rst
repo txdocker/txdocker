@@ -10,6 +10,10 @@ take advantage of Twisted_.
 
 This project was originally based off of `Alexander Klizhentas`_'s `Shipper`_.
 
+**NOTE: This is currently just a verbatim extraction from Shipper. 
+My future intent is to get this to more closely resemble docker-py. 
+As a consequence, the API is going to change. Beware!**
+
 Installation
 ------------
 
