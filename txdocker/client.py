@@ -10,14 +10,31 @@ import logging
 import logging.handlers
 from copy import copy
 
+from zope.interface import implementer
+
+from twisted.web.iweb import IAgentEndpointFactory
 from twisted.internet import reactor
-from twisted.web.client import HTTPConnectionPool
+from twisted.internet.endpoints import UNIXClientEndpoint
 from twisted.internet.defer import Deferred, succeed
 from twisted.internet.protocol import Protocol
-from twisted.web.client import ResponseDone
+from twisted.web.client import Agent, HTTPConnectionPool, ResponseDone
+
 import treq
 
-from .errors import assert_code
+from txdocker.errors import assert_code
+
+
+@implementer(IAgentEndpointFactory)
+class DockerEndpointFactory(object):
+    """
+    Connect to Docker's Unix socket.
+    """
+    def __init__(self, reactor, socket=b'/var/run/docker.sock'):
+        self.reactor = reactor
+        self.socket = socket
+
+    def endpointForURI(self, uri):
+        return UNIXClientEndpoint(self.reactor, self.socket)
 
 
 class Client(object):
@@ -29,11 +46,89 @@ class Client(object):
     pool = None
     log = None
 
-    def __init__(self, version="1.6", timeout=None, log=None, pool=None):
-        self.pool = pool or HTTPConnectionPool(reactor, persistent=False)
-        self.version = version
+    def __init__(self, host, api_version="1.8", timeout=None, log=None, pool=None):
+        self.api_version = api_version
         self.timeout = timeout
+        self.pool = pool or HTTPConnectionPool(reactor, persistent=False)
         self.log = log or logging.getLogger(__name__)
+
+        if host.startswith('unix:///'):
+            self.host, socket = host[:7], host[7:]
+            factory = DockerEndpointFactory(reactor, socket)
+            self.agent = Agent.usingEndpointFactory(reactor, factory)
+        else:
+            self.host = host
+            self.agent = Agent(reactor, pool=self.pool)
+        self.client = treq.client.HTTPClient(self.agent)
+
+    def request(self, method, path, **kwargs):
+        kwargs = copy(kwargs)
+        kwargs['params'] = _remove_empty(kwargs.get('params'))
+        kwargs['pool'] = self.pool
+
+        post_json = kwargs.pop('post_json', False)
+        if post_json:
+            headers = kwargs.setdefault('headers', {})
+            headers['Content-Type'] = ['application/json']
+            kwargs['data'] = json.dumps(kwargs['data'])
+
+        kwargs['url'] = self._make_url(path)
+        expect_json = kwargs.pop('expect_json', True)
+
+        result = Deferred()
+        d = method(**kwargs)
+
+        def content(response):
+            response_content = []
+            cd = treq.collect(response, response_content.append)
+            cd.addCallback(lambda _: ''.join(response_content))
+            cd.addCallback(done, response)
+            return cd
+
+        def done(response_content, response):
+            assert_code(response.code, response_content)
+            if expect_json:
+                return json.loads(response_content)
+            return response_content
+
+        d.addCallback(content)
+        d.addCallback(result.callback)
+        d.addErrback(result.errback)
+
+        return result
+
+    def get(self, path, **kwargs):
+        return self.request(self.client.get, path, **kwargs)
+
+    def post(self, path, **kwargs):
+        return self.request(self.client.post, path, **kwargs)
+
+    def delete(self, path, **kwargs):
+        return self.request(self.client.delete, path, **kwargs)
+
+    def _make_url(self, method):
+        return "{}/v{}/{}".format(self.host, self.api_version, method)
+
+    def info(self):
+        return self.get('info')
+
+    def version(self):
+        return self.get('version')
+
+    def wait(self, container):
+        """Waits for the container to stop and gets the exit code"""
+
+        def log_results(results):
+            self.log.debug("{0} has stopped with exit code {1}".format(
+                container, results['StatusCode']))
+            return results
+
+        d = self.post(
+            "containers/{}/wait".format(container.id),
+            expect_json=True)
+
+        d.addCallback(log_results)
+        return d
 
     def build(self, host, dockerfile, tag=None, quiet=False,
               nocache=False, rm=False):
@@ -180,70 +275,6 @@ class Client(object):
             pass
         d.addErrback(on_error)
         return result
-
-    def wait(self, host, container):
-        """Waits for the container to stop and gets the exit code"""
-
-        def log_results(results):
-            self.log.debug("{0} has stopped with exit code {1}".format(
-                container, results['StatusCode']))
-            return results
-
-        d = self.post(
-            host, "containers/{}/wait".format(container.id),
-            expect_json=True)
-
-        d.addCallback(log_results)
-        return d
-
-    def request(self, method, host, path, **kwargs):
-
-        kwargs = copy(kwargs)
-        kwargs['params'] = _remove_empty(kwargs.get('params'))
-        kwargs['pool'] = self.pool
-
-        post_json = kwargs.pop('post_json', False)
-        if post_json:
-            headers = kwargs.setdefault('headers', {})
-            headers['Content-Type'] = ['application/json']
-            kwargs['data'] = json.dumps(kwargs['data'])
-
-        kwargs['url'] = self._make_url(host.url, path)
-        expect_json = kwargs.pop('expect_json', True)
-
-        result = Deferred()
-        d = method(**kwargs)
-
-        def content(response):
-            response_content = []
-            cd = treq.collect(response, response_content.append)
-            cd.addCallback(lambda _: ''.join(response_content))
-            cd.addCallback(done, response)
-            return cd
-
-        def done(response_content, response):
-            assert_code(response.code, response_content)
-            if expect_json:
-                return json.loads(response_content)
-            return response_content
-
-        d.addCallback(content)
-        d.addCallback(result.callback)
-        d.addErrback(result.errback)
-
-        return result
-
-    def get(self, host, path, **kwargs):
-        return self.request(treq.get, host, path, **kwargs)
-
-    def post(self, host, path, **kwargs):
-        return self.request(treq.post, host, path, **kwargs)
-
-    def delete(self, host, path, **kwargs):
-        return self.request(treq.post, host, path, **kwargs)
-
-    def _make_url(self, url, method):
-        return "{}/v{}/{}".format(url, self.version, method)
 
 
 def _remove_empty(params):

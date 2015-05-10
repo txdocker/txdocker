@@ -46,8 +46,37 @@ class ClientCommands(TestCase):
         results can be stubbed out
         """
 
-        self.treq = mock.patch('txdocker.client.treq', wraps=treq).start()
+        self.client = Client('unix:///var/run/docker.sock')
+        self.mock = mock.Mock(self.client.client, wrap=self.client.client)
+        self.client.client = self.mock
         self.addCleanup(mock.patch.stopall)
+
+
+    def test_info(self):
+        self.mock.get.return_value = succeed(
+            _Response(200, {'StatusCode': 0}))
+
+        d = self.client.info()
+
+        self.mock.get.assert_called_once_with(
+            url="unix:///v1.8/info",
+            params={},
+            pool=mock.ANY)
+
+        self.assertEqual({'StatusCode': 0}, self.successResultOf(d))
+
+    def test_version(self):
+        self.mock.get.return_value = succeed(
+            _Response(200, {'StatusCode': 0}))
+
+        d = self.client.version()
+
+        self.mock.get.assert_called_once_with(
+            url="unix:///v1.8/version",
+            params={},
+            pool=mock.ANY)
+
+        self.assertEqual({'StatusCode': 0}, self.successResultOf(d))
 
     def test_wait(self):
         """
@@ -55,15 +84,15 @@ class ClientCommands(TestCase):
         returned as a dict
         """
 
-        self.treq.post.return_value = succeed(
+        self.mock.post.return_value = succeed(
             _Response(200, {'StatusCode': 0}))
 
-        d = Client().wait(host=mock.Mock(url='http://localhost'),
-                          container=mock.Mock(id='__id__'))
+        d = self.client.wait(container=mock.Mock(id='__id__'))
 
-        self.treq.post.assert_called_once_with(
-            url="http://localhost/v1.6/containers/__id__/wait",
+        self.mock.post.assert_called_once_with(
+            url="unix:///v1.8/containers/__id__/wait",
             params={},
             pool=mock.ANY)
 
         self.assertEqual({'StatusCode': 0}, self.successResultOf(d))
+
