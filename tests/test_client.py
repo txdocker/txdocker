@@ -10,7 +10,7 @@ from twisted.trial.unittest import TestCase
 from twisted.web.client import ResponseDone
 
 from txdocker.client import Client
-
+from txdocker.config import ContainerConfig
 
 class _Response(object):
     """
@@ -52,47 +52,72 @@ class ClientCommands(TestCase):
         self.addCleanup(mock.patch.stopall)
 
 
-    def test_info(self):
+    def set_get_200(self):
         self.mock.get.return_value = succeed(
             _Response(200, {'StatusCode': 0}))
 
-        d = self.client.info()
+    def set_post_200(self):
+        self.mock.post.return_value = succeed(
+            _Response(200, {'StatusCode': 0}))
 
-        self.mock.get.assert_called_once_with(
-            url="unix:///v1.8/info",
-            params={},
-            pool=mock.ANY)
+    def get_url(self, endpoint, version='1.8'):
+        return "unix:///v{}/{}".format(version, endpoint)
 
+    def assert_get_once(self, d, endpoint, **kwargs):
+        kwargs['url'] = self.get_url(endpoint)
+        kwargs['pool'] = mock.ANY
+        self.mock.get.assert_called_once_with(**kwargs)
         self.assertEqual({'StatusCode': 0}, self.successResultOf(d))
+
+    def assert_post_once(self, d, endpoint, **kwargs):
+        kwargs['url'] = self.get_url(endpoint)
+        kwargs['pool'] = mock.ANY
+        self.mock.post.assert_called_once_with(**kwargs)
+        self.assertEqual({'StatusCode': 0}, self.successResultOf(d))
+
+    def test_info(self):
+        self.set_get_200()
+        d = self.client.info()
+        self.assert_get_once(d, 'info')
 
     def test_version(self):
-        self.mock.get.return_value = succeed(
-            _Response(200, {'StatusCode': 0}))
-
+        self.set_get_200()
         d = self.client.version()
-
-        self.mock.get.assert_called_once_with(
-            url="unix:///v1.8/version",
-            params={},
-            pool=mock.ANY)
-
-        self.assertEqual({'StatusCode': 0}, self.successResultOf(d))
+        self.assert_get_once(d, 'version')
 
     def test_wait(self):
         """
         The correct parameters are passed to treq.post, and the JSON result is
         returned as a dict
         """
+        self.set_post_200()
+        d = self.client.wait('__id__')
+        self.assert_post_once(d, "containers/__id__/wait")
 
-        self.mock.post.return_value = succeed(
-            _Response(200, {'StatusCode': 0}))
+    def test_images(self):
+        self.set_get_200()
+        d = self.client.images()
+        self.assert_get_once(d, "images/json", params={'all':False})
 
-        d = self.client.wait(container=mock.Mock(id='__id__'))
+    def test_containers(self):
+        self.set_get_200()
+        d = self.client.containers()
+        self.assert_get_once(d, "containers/json", params={
+            'all':False,
+            'limit': -1,})
 
-        self.mock.post.assert_called_once_with(
-            url="unix:///v1.8/containers/__id__/wait",
-            params={},
-            pool=mock.ANY)
+    def test_create_container(self):
+        self.set_post_200()
+        config = ContainerConfig('foo/bar:latest')
+        d = self.client.create_container(config)
+        self.assert_post_once(
+            d, "containers/create",
+            headers={'Content-Type': ['application/json']},
+            data=json.dumps(config))
 
-        self.assertEqual({'StatusCode': 0}, self.successResultOf(d))
+    def test_inspect(self):
+        self.set_get_200()
+        d = self.client.inspect("__id__")
+        self.assert_get_once(d, "containers/__id__/json")
+
 

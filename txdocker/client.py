@@ -64,6 +64,8 @@ class Client(object):
     def request(self, method, path, **kwargs):
         kwargs = copy(kwargs)
         kwargs['params'] = _remove_empty(kwargs.get('params'))
+        if not kwargs['params']:
+            del kwargs['params']
         kwargs['pool'] = self.pool
 
         post_json = kwargs.pop('post_json', False)
@@ -115,111 +117,50 @@ class Client(object):
     def version(self):
         return self.get('version')
 
-    def wait(self, container):
+    def wait(self, container_id):
         """Waits for the container to stop and gets the exit code"""
 
         def log_results(results):
             self.log.debug("{0} has stopped with exit code {1}".format(
-                container, results['StatusCode']))
+                container_id, results['StatusCode']))
             return results
 
         d = self.post(
-            "containers/{}/wait".format(container.id),
+            "containers/{}/wait".format(container_id),
             expect_json=True)
 
         d.addCallback(log_results)
         return d
 
-    def build(self, host, dockerfile, tag=None, quiet=False,
-              nocache=False, rm=False):
-        """
-        Run build of a container from buildfile
-        that can be passed as local/remote path or file object(fobj)
-        """
-
+    def images(self, all=False):
         params = {
-            'q': quiet,
-            'nocache': nocache,
-            'rm': rm
+            'all': all,
         }
+        return self.get('images/json', params=params)
 
-        if dockerfile.is_remote:
-            params['remote'] = dockerfile.url
-        if tag:
-            params['t'] = tag
-
-        headers = {}
-        if not dockerfile.is_remote:
-            headers = {'Content-Type': 'application/tar'}
-
-        container = []
-        result = Deferred()
-
-        def on_content(line):
-            if line:
-                self.log.debug("{}: {}".format(host, line.strip()))
-                match = re.search(r'Successfully built ([0-9a-f]+)', line)
-                if match:
-                    container.append(match.group(1))
-
-        d = treq.post(
-            url=self._make_url(host.url, 'build'),
-            data=dockerfile.archive,
-            params=params,
-            headers=headers,
-            pool=self.pool)
-
-        def on_done(*args, **kwargs):
-            if not container:
-                result.errback(RuntimeError("Build failed"))
-            else:
-                result.callback(container[0])
-
-        d.addCallback(treq.collect, on_content)
-        d.addBoth(on_done)
-        return result
-
-    def images(self, host, name=None, quiet=False,
-               all=False, viz=False, pretty=False):
-        path = "images/viz" if viz else "images/json"
+    def containers(self, all=False, since=None, before=None, limit=-1, size=None):
         params = {
-            'only_ids': 1 if quiet else 0,
-            'all': 1 if all else 0,
-            'params': name
-        }
-
-        return self.request(treq.get, host, path,
-                            params=params,
-                            expect_json=not viz)
-
-    def containers(self, host,
-                   quiet=False, all=False, trunc=True, latest=False,
-                   since=None, before=None, limit=-1, pretty=False,
-                   running=None, image=None):
-        params = {
-            'limit': 1 if latest else limit,
-            'only_ids': 1 if quiet else 0,
-            'all': 1 if all else 0,
-            'trunc_cmd': 1 if trunc else 0,
+            'all': all,
+            'limit': limit,
             'since': since,
-            'before': before
+            'before': before,
+            'size': size,
         }
-        return self.get(host, 'containers/ps', params=params)
+        return self.get('containers/json', params=params)
 
-    def create_container(self, host, config, name=None):
+    def create_container(self, config, name=None):
         params = {}
         if name:
             params['name'] = name
         return self.post(
-            host,
             "containers/create",
             params=params,
-            data=config.to_json(),
+            data=config,
             post_json=True)
 
-    def inspect(self, host, container):
+    def inspect(self, container_id):
         return self.get(
-            host, "containers/{}/json".format(container.id),
+            "containers/{}/json".format(container_id),
             expect_json=True)
 
     def start(self, host, container, binds=None, port_binds=None, links=[]):
@@ -274,6 +215,55 @@ class Client(object):
         def on_error(failure):
             pass
         d.addErrback(on_error)
+        return result
+
+    def build(self, host, dockerfile, tag=None, quiet=False,
+              nocache=False, rm=False):
+        """
+        Run build of a container from buildfile
+        that can be passed as local/remote path or file object(fobj)
+        """
+
+        params = {
+            'q': quiet,
+            'nocache': nocache,
+            'rm': rm
+        }
+
+        if dockerfile.is_remote:
+            params['remote'] = dockerfile.url
+        if tag:
+            params['t'] = tag
+
+        headers = {}
+        if not dockerfile.is_remote:
+            headers = {'Content-Type': 'application/tar'}
+
+        container = []
+        result = Deferred()
+
+        def on_content(line):
+            if line:
+                self.log.debug("{}: {}".format(host, line.strip()))
+                match = re.search(r'Successfully built ([0-9a-f]+)', line)
+                if match:
+                    container.append(match.group(1))
+
+        d = treq.post(
+            url=self._make_url(host.url, 'build'),
+            data=dockerfile.archive,
+            params=params,
+            headers=headers,
+            pool=self.pool)
+
+        def on_done(*args, **kwargs):
+            if not container:
+                result.errback(RuntimeError("Build failed"))
+            else:
+                result.callback(container[0])
+
+        d.addCallback(treq.collect, on_content)
+        d.addBoth(on_done)
         return result
 
 
